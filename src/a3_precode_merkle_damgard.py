@@ -58,35 +58,68 @@ R = [5, 11, 17, 23, 7, 13, 19, 29]
 
 def u32(x: int) -> int:
     """Force x into unsigned 32-bit range."""
-    return x & 0xFFFFFFFF
+    return x & 0xFFFFFFFF 
 
 def rotl32(x: int, n: int) -> int:
     """Rotate-left 32-bit."""
-    x = u32(x)
-    n %= 32
+    x = u32(x) # x is treated as unsigned 32 bit value
+    n %= 32 # n is in range of 0 to 31
+    # shift bits left, combine, takes the bits that fell off the left side and put them back on the right, trim  to 32 bits
     return u32((x << n) | (x >> (32 -n)))
 
 def rotr32(x: int, n: int) -> int:
     """Rotate-right 32-bit."""
-    x = u32(x)
-    n %= 32
+    x = u32(x) # x is treated as unsigned 32 bit value
+    n %= 32 # n is in range of 0 to 31 
+    # shift bits right, combine, takes the bits that fell off the right side and put them back on the left, trim to 32 bits
     return u32((x >> n) | (x << (32 - n)))
 
 def xor_bytes(a: bytes, b: bytes) -> bytes:
     """XOR two equal-length byte strings."""
-    if (len(a) != len(b)):
+    if (len(a) != len(b)): # check if the lengths are equal 
         raise ValueError("required equal length")
-    return bytes(x ^ y for x, y in zip(a, b))
+    # XOR each pair of bytes from a and b, return as bytes 
+    # x ^ y computes XOR for each pair.
+    # zip(a, b) pairs corresponding bytes
+    return bytes(x ^ y for x, y in zip(a, b)) 
 
 def hamming_distance(a: bytes, b: bytes) -> int:
     """Bitwise Hamming distance between byte strings."""
-    # TODO(Task 1): implement
-    raise NotImplementedError
+    if (len(a) != len(b)): # check if the length are equal 
+        raise ValueError("required equal length")
+    # Count how many bits differ between two equal-length byte strings.
+    # XOR each pair of bytes.
+    # In the XOR result, every 1 means a bit was different.
+    # .bit_count() counts how many 1s there are.
+    # sum(...) adds them up across all bytes.
+    return sum((x ^ y).bit_count() for x, y in zip(a, b))
 
 def flip_one_random_bit(data: bytes) -> bytes:
     """Return a copy of data with exactly one random bit flipped."""
-    # TODO(Task 1): implement (use os.urandom for randomness)
-    raise NotImplementedError
+    if len(data) == 0: # check if data is empty
+        raise ValueError("data must be non-empty")
+    
+    out = bytearray(data) # mutable copy of data 
+
+    # os.urandom(4) gives 4 random bytes
+    # int.from_bytes(..., "little") turns them into an integer
+    # % len(out) makes sure the result is a valid index into the byte array
+    byte_index = int.from_bytes(os.urandom(4), "little") % len(out) 
+
+    # chooses a random bit inside that byte
+    # converted to integer
+    # % 8 gives a number from 0 to 7
+    bit_index = int.from_bytes(os.urandom(1), "little") % 8
+
+    # Flips that bit from the original byte value:
+        # 1 << bit_index makes a bit mask with exactly one 1
+        # ^= means XOR in place
+        # XOR with 1 flips the bit:
+            # 0 becomes 1, 1 becomes 0
+    out[byte_index] ^= (1 << bit_index)
+
+    # Converts back to regular bytes.
+    return bytes(out) 
 
 # ============================================================
 # Encoding helpers (provided)
@@ -119,38 +152,38 @@ def compress(state: Sequence[int], block: bytes) -> List[int]:
     Toy compression function spec (must implement exactly):
 
     Input:
-      state: 8 x u32
-      block: 64 bytes -> 16 x u32 message words m[0..15]
+        state: 8 x u32
+        block: 64 bytes -> 16 x u32 message words m[0..15]
 
     Working vars:
-      v0..v7 = state words (u32)
+        v0..v7 = state words (u32)
 
     For round i in 0..11:
-      t0 = u32(v0 + m[(i*5 + 0) % 16] + RC[i])
-      v4 = u32(v4 ^ rotl32(t0, R[(i + 0) % 8]))
-      v0 = u32(v0 + v4)
+        t0 = u32(v0 + m[(i*5 + 0) % 16] + RC[i])
+        v4 = u32(v4 ^ rotl32(t0, R[(i + 0) % 8]))
+        v0 = u32(v0 + v4)
 
-      t1 = u32(v1 + m[(i*5 + 1) % 16] + RC[i])
-      v5 = u32(v5 ^ rotl32(t1, R[(i + 1) % 8]))
-      v1 = u32(v1 + v5)
+        t1 = u32(v1 + m[(i*5 + 1) % 16] + RC[i])
+        v5 = u32(v5 ^ rotl32(t1, R[(i + 1) % 8]))
+        v1 = u32(v1 + v5)
 
-      t2 = u32(v2 + m[(i*5 + 2) % 16] + RC[i])
-      v6 = u32(v6 ^ rotl32(t2, R[(i + 2) % 8]))
-      v2 = u32(v2 + v6)
+        t2 = u32(v2 + m[(i*5 + 2) % 16] + RC[i])
+        v6 = u32(v6 ^ rotl32(t2, R[(i + 2) % 8]))
+        v2 = u32(v2 + v6)
 
-      t3 = u32(v3 + m[(i*5 + 3) % 16] + RC[i])
-      v7 = u32(v7 ^ rotl32(t3, R[(i + 3) % 8]))
-      v3 = u32(v3 + v7)
+        t3 = u32(v3 + m[(i*5 + 3) % 16] + RC[i])
+        v7 = u32(v7 ^ rotl32(t3, R[(i + 3) % 8]))
+        v3 = u32(v3 + v7)
 
-      # cross-mix / permutation
-      if i % 2 == 0:
-          v0, v1, v2, v3 = v1, v2, v3, v0
-      else:
-          v4, v5, v6, v7 = v6, v7, v4, v5
+        # cross-mix / permutation
+        if i % 2 == 0:
+            v0, v1, v2, v3 = v1, v2, v3, v0
+        else:
+            v4, v5, v6, v7 = v6, v7, v4, v5
 
     Output:
-      new_state[j] = u32(state[j] ^ vj ^ v(j+4))
-      (i.e., combine old chaining value with mixed vars)
+        new_state[j] = u32(state[j] ^ vj ^ v(j+4))
+        (i.e., combine old chaining value with mixed vars)
     """
     # TODO(Task 2): implement
     raise NotImplementedError
