@@ -184,9 +184,85 @@ def compress(state: Sequence[int], block: bytes) -> List[int]:
     Output:
         new_state[j] = u32(state[j] ^ vj ^ v(j+4))
         (i.e., combine old chaining value with mixed vars)
+
+    It takes:
+        state: the current internal hash state, sequence of 8 integers 
+        block: one 64-byte message block 
+    Returns:
+        a new 8-word state 
     """
-    # TODO(Task 2): implement
-    raise NotImplementedError
+
+    # Ensure state has exactly 8 words, and block has exactly 64 bytes 
+    if len(state) != STATE_WORDS:
+        raise ValueError("State must contain 8 words")
+    if len(block) != BLOCK_SIZE:
+        raise ValueError("Block must be 64 bytes")
+    
+    # Convert into 16 words --> 1 word = 4 bytes --> 64/4 = 16 
+    # m[0] to m[15] are the 16 message words from the block. 
+    m = bytes_to_words_le(block)
+
+    # Copy state words into working variables 
+    # Takes the 8 state words and puts them into local variables 
+    # Easier to update them round by round 
+    # u32(w) forces each value into 32-bit range 
+    # v0..v7 are the working state values 
+    # Original state stays unchanged 
+    v0, v1, v2, v3, v4, v5, v6, v7 = [u32(w) for w in state]
+
+    # Main loop of 12 rounds --> the compression runs for 12 rounds
+    # Each round mixes current state value, one or more message words, one round constant RC[i] and rotations from R[...]
+    for i in range(12):
+        # Create a temp value (t0) from current state word (v), one message word and one round constant
+        # Change message index every round 
+        t0 = u32(v0 + m[(i * 5 + 0) % 16] + RC[i])
+
+        # Rotate t0, XORs into v4 --> v4 is updated using a transformed version of t0 
+        v4 = u32(v4 ^ rotl32(t0, R[(i + 0) % 8]))
+        
+        # Update v0 by adding the new v4 --> v0 and v4 influence each other 
+        v0 = u32(v0 + v4)
+
+        # Same patterm (Each lane adds a message word and round constant, rotates, XORs, adds again) for :
+            # v1 with v5
+            # v2 with v6
+            # v3 with v7
+        # Each round has 4 parallel mixing lanes:
+            # (v0, v4)
+            # (v1, v5)
+            # (v2, v6)
+            # (v3, v7)
+        t1 = u32(v1 + m[(i * 5 + 1) % 16] + RC[i])
+        v5 = u32(v5 ^rotl32(t1, R[(i + 1) % 8]))
+        v1 = u32(v1 + v5)
+
+        t2 = u32(v2 + m[(i * 5 + 2) % 16] + RC[i])
+        v6 = u32(v6 ^rotl32(t2, R[(i + 2) % 8]))
+        v2 = u32(v2 + v6)
+
+        # End of each round permute part of the state
+        # Make values move around so the whole state gets mixed better
+        if i % 2 == 0:
+            # rotate the first four words left if even 
+            v0, v1,v2, v3 = v1, v2, v3, v0 
+        else:
+            # Rearrange the last four words if odd
+            v4, v5, v6, v7 = v6, v7, v4, v5 
+
+    # After 12 rounds --> store the final working variables 
+    mixed = [v0, v1, v2, v3, v4, v5, v6, v7]
+
+    # Feed forward design 
+    # For each position j, combine:
+        # The original input state word state[j]
+        # The same position mixed word mixed[j]
+        # Another mixed word halfway around the state mixed[(j + 4) % 8]
+    # Each output word depends on:
+        # Old state
+        # Local mixed value 
+        # Another mixed value from other half
+    return [u32(state[j] ^ mixed[j] ^ mixed[(j + 4) % 8]) for j in range(STATE_WORDS)] 
+
 
 # ============================================================
 # Task 3: Build the Hash Function (Merkle–Damgård) (TODO)
@@ -198,9 +274,42 @@ def md_pad(msg: bytes) -> bytes:
     - append 0x80
     - append 0x00 until (len % 64) == 56
     - append 8-byte little-endian bit-length of original message
+
+    Input: 
+        msg: the original message as bytes
+    Output: 
+        The padded message 
     """
-    # TODO(Task 3): implement
-    raise NotImplementedError
+    # Message length in bytes 
+    # Padding stores in bits --> multiply by 8
+    # Keep only the lowest 64 bits 
+    # Why:
+    #   The length field at the end is exactly 8 bytes = 64 bits
+    #   Match the standard stule of MD padding 
+    #   Example --> message of 3 bytes long = 3 * 8 = 24 
+    bit_len = (len(msg) * 8) & 0xFFFFFFFFFFFFFFFF
+    
+    # Pad with 0x80 --> adds a single 1 bit followed by seven 0 bits --> Mark where the padding starts 
+    pad = b"\x80"
+    
+    # Compute how many zero bytes are needed 
+    # The goal is after adding 0x80 and the zero bytes, the message length should be 56 bytes mod 64 
+    # 56 because the final 8 bytes are reserved for the length field and 56 + 8 = 64
+    # Do len(msg) + 1 --> because the 0x80 byte has already been added conceptually 
+    # Do modulo BLOCK_SIZE because blocks are 64 bytes
+    zero_len = (56 - ((len(msg) + 1) % BLOCK_SIZE)) % BLOCK_SIZE
+    
+    # Append zero bytes --> fill the gap with zeros
+    pad += b"\x00" * zero_len
+    
+    # Append 8-byte little-endian length 
+    # Convert bit_len into 8 bytes --> "<" = little-endian, "Q" = unsigned 64-bit integer 
+    # bit_len = 24 --> b'\x18\x00\x00\x00\x00\x00\x00\x00' because 24 in hex is 0x18
+    pad += struct.pack("<Q", bit_len)
+    
+    # Return original message plus padding
+    # Final result is "original message || 0x80 || zeros || length"
+    return msg + pad 
 
 def toyhash(msg: bytes) -> bytes:
     """
