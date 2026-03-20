@@ -240,6 +240,10 @@ def compress(state: Sequence[int], block: bytes) -> List[int]:
         v6 = u32(v6 ^rotl32(t2, R[(i + 2) % 8]))
         v2 = u32(v2 + v6)
 
+        t3 = u32(v3 + m[(i * 5 + 1) % 16] + RC[i])
+        v7 = u32(v7 ^rotl32(t3, R[(i + 1) % 8]))
+        v3 = u32(v3 + v7)
+
         # End of each round permute part of the state
         # Make values move around so the whole state gets mixed better
         if i % 2 == 0:
@@ -321,8 +325,13 @@ def toyhash(msg: bytes) -> bytes:
       - iterate compress over each 64-byte block
       - output words_to_bytes_le(state)
     """
-    # TODO(Task 3): implement
-    raise NotImplementedError
+    state = IV[:] # IV is the fixed initial vector, contains 8 words of 32 bits each, "[:]" makes a copy, so the original is not changed 
+    padded = md_pad(msg) # Pad to a multiple of 64 bytes
+
+    for i in range(0, len(padded), BLOCK_SIZE):
+        state = compress(state, padded[i:i + BLOCK_SIZE])
+
+    return words_to_bytes_le(state) # State is now a list of 8 integers 
 
 def toyhash_hex(msg: bytes) -> str:
     return toyhash(msg).hex()
@@ -345,8 +354,15 @@ def toyhash_stateful(msg: bytes) -> Tuple[bytes, ToyHashState]:
       - internal chaining value (8 x u32)
       - total_len = number of bytes of ORIGINAL (unpadded) message processed
     """
-    # TODO(Task 6): implement
-    raise NotImplementedError
+    state = IV[:] # IV is the fixed initial vector, contains 8 words of 32 bits each, "[:]" makes a copy, so the original is not changed 
+    padded = md_pad(msg) # Pad to a multiple of 64 bytes
+
+    # Loop through blocks 
+    for i in range(0, len(padded), BLOCK_SIZE):
+        state = compress(state, padded[i:i + BLOCK_SIZE])
+
+    # Return both digest as bytes and state object containing internal state and original unpadded message length 
+    return words_to_bytes_le(state), ToyHashState(h = state[:], total_len=len(msg))
 
 def toyhash_extend(
     digest: bytes,
@@ -367,8 +383,47 @@ def toyhash_extend(
       - Then continue hashing extra starting from the chaining value implied
         by digest (or from state_override if provided for testing).
     """
-    # TODO(Task 6): implement
-    raise NotImplementedError
+    if len(digest) != DIGEST_SIZE:
+        raise ValueError ("digest must be 32 bytes")
+    
+    def glue_padding(msg_len: int) -> bytes:
+        # Recreate the padding that md_pad() would append to the original message
+        bit_len = (msg_len * 8) & 0xFFFFFFFFFFFFFFFF
+        pad = b"\x80"
+        zero_len = (56 - ((msg_len + 1) % BLOCK_SIZE)) % BLOCK_SIZE
+        pad += b"\x00" * zero_len
+        pad += struct.pack("<Q", bit_len)
+        return pad 
+    
+    def continuation_pad(extra_data: bytes, total_len_before: int) -> bytes:
+        # Pad the attacker-controlled suffix as if hashing continues from 
+        # orig || pad(orig), so the final length field matches the forged message. 
+        total_len_after = total_len_before + len(extra_data) 
+        out = extra_data + b"\x80"
+        zero_len = (56 - ((total_len_after + 1) % BLOCK_SIZE)) % BLOCK_SIZE
+        out += b"\x00" * zero_len
+        out += struct.pack("<Q", (total_len_after * 8) & 0xFFFFFFFFFFFFFFFF)
+        return out 
+    
+    # Recover the internal chaining state from the digest, unless a test override was provided. 
+    if state_override is not None:
+        state = state_override.h[:]
+    else:
+        state = digest_to_state_words_le(digest)
+
+    # Reconstruct how many bytes had already been processed before the extra attacker-controlled data is added. 
+    glue = glue_padding(orig_len)
+    proc_before_extra = orig_len + len(glue)
+    
+    # Build the padded suffix: extra || padding_for_forged_message. 
+    suffix = continuation_pad(extra, proc_before_extra)
+
+    # Continue hashing from the recovered internal state. 
+    for i in range(0, len(suffix), BLOCK_SIZE):
+        state = compress(state, suffix[i:i + BLOCK_SIZE])
+
+    # Return the forged digest. 
+    return words_to_bytes_le(state)
 
 # ============================================================
 # Task 7: Merkle Tree Hashing (TODO)
@@ -383,8 +438,25 @@ def merkle_root(leaves: Sequence[bytes], hash_fn: Callable[[bytes], bytes]) -> b
       - parent: hash_fn(left_hash || right_hash)
       - if odd number of nodes at a level: duplicate the last node
     """
-    # TODO(Task 7): implement
-    raise NotImplementedError
+    if len(leaves) == 0:
+        raise ValueError("Leaves must be non-empty")
+    
+    # First level of the tree: hash each lead value 
+    level = [hash_fn(leaf) for leaf in leaves]
+
+    # Repeatedly hash pairs of nodes until the root remains. 
+    while len(level) > 1:
+        # If the level has an odd number of nodes, duplicate the last one. 
+        if len(level) % 2 == 1:
+            level.append(level[-1])
+
+        next_level = []
+        for i in range (0, len(level), 2):
+            # Parent node = hash(left_child || right_child)
+            next_level.append(hash_fn(level[i] + level[i+1]))
+        level = next_level
+
+    return level[0]
 
 def merkle_proof(leaves: Sequence[bytes], index: int, hash_fn: Callable[[bytes], bytes]) -> List[Tuple[bytes, str]]:
     """
@@ -396,8 +468,35 @@ def merkle_proof(leaves: Sequence[bytes], index: int, hash_fn: Callable[[bytes],
       - if direction == 'L': parent = hash_fn(sibling || current)
       - if direction == 'R': parent = hash_fn(current || sibling)
     """
-    # TODO(Task 7): implement
-    raise NotImplementedError
+    if len(leaves) == 0:
+        raise ValueError("Leaves must be non empty")
+    if not (0 <= index < len(leaves)):
+        raise ValueError("Index out of range")
+    
+    proof: List[Tuple[bytes, str]] = []
+    level = [hash_fn(leaf) for leaf in leaves]
+    idx = index 
+
+    # Move up the tree until reaching the root. 
+    while len(level) > 1:
+        # Duplicate the last node if the level has odd size 
+        if len(level) % 2 == 1:
+            level.append(level[-1])
+
+        # Record the sibling hash and whether it is left or right of the current node
+        sibling_idx = idx - 1 if idx % 2 == 1 else idx + 1
+        direction = "L" if sibling_idx < idx else "R"
+        proof.append ((level[sibling_idx], direction))
+
+        # Build the next level by hashing node pairs 
+        next_level = []
+        for i in range (0, len(level), 2):
+            next_level.append(hash_fn(level[i] + level [i + 1]))
+
+        level = next_level
+        idx //= 2 # Move to the parent node 
+
+    return proof
 
 def merkle_verify(
     leaf: bytes,
@@ -407,8 +506,22 @@ def merkle_verify(
     hash_fn: Callable[[bytes], bytes]
 ) -> bool:
     """Verify inclusion proof for leaf under the conventions documented above."""
-    # TODO(Task 7): implement
-    raise NotImplementedError
+    # Start from the hash of target leaf. 
+    current = hash_fn(leaf)
+
+    # Rebuild the path from the leaf up to the root
+    for sibling_hash, direction in proof:
+        if direction == "L":
+            current = hash_fn(sibling_hash + current)
+        elif direction == "R":
+            current = hash_fn(current + sibling_hash)
+        else:
+            return False # Invalid proof direction 
+
+    # Proof is valid only if the reconstructed root matches.   
+    return current == root 
+
+
 
 # ============================================================
 # Experiments (Tasks 4, 5, 8) — provided
