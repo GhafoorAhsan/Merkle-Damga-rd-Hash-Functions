@@ -240,8 +240,8 @@ def compress(state: Sequence[int], block: bytes) -> List[int]:
         v6 = u32(v6 ^rotl32(t2, R[(i + 2) % 8]))
         v2 = u32(v2 + v6)
 
-        t3 = u32(v3 + m[(i * 5 + 1) % 16] + RC[i])
-        v7 = u32(v7 ^rotl32(t3, R[(i + 1) % 8]))
+        t3 = u32(v3 + m[(i * 5 + 3) % 16] + RC[i])
+        v7 = u32(v7 ^rotl32(t3, R[(i + 3) % 8]))
         v3 = u32(v3 + v7)
 
         # End of each round permute part of the state
